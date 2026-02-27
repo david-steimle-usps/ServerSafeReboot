@@ -19,7 +19,11 @@ param(
     [Parameter(HelpMessage = "The directory for the log file. The default uses environmental variables which have a high likelihood of existing. If you want to use another directory it is advised you add code to assure directory existence.")]
     [string]$LogDirectory = $env:TEMP,
     [Parameter(HelpMessage = "The file to log to. It will be placed in the directory defined above.")]
-    [string]$LogFileName = "WindowsUpdateCleanupRemediation.log"
+    [string]$LogFileName = "WindowsUpdateCleanupRemediation.log",
+    [Parameter(HelpMessage = "The name of the Windows Event Log to write to.")]
+    [string]$EventLogName = 'Application',
+    [Parameter(HelpMessage = "The event log source name to use when writing events.")]
+    [string]$EventLogSource = 'ServerSafeReboot'
 )
 
 #region Logger
@@ -31,9 +35,20 @@ class LogWriter {
     [string]$Path
     [long]$MaxBytes = 10MB
     [int]$MaxBackups = 2
+    [string]$EventLogName = 'Application'
+    [string]$EventSource = 'ServerSafeReboot'
+    [int]$InfoEventId = 1000
+    [int]$WarnEventId = 2000
+    [int]$ErrorEventId = 3000
 
     LogWriter([string]$Path) {
         $this.Path = $Path
+    }
+
+    LogWriter([string]$Path, [string]$EventLogName, [string]$EventSource) {
+        $this.Path = $Path
+        $this.EventLogName = $EventLogName
+        $this.EventSource = $EventSource
     }
 
     [void] Rotate() {
@@ -83,11 +98,51 @@ class LogWriter {
         $this.Writer.Close()
         $this.Writer.Dispose()
     }
+
+    [void] EnsureEventSource() {
+        if (-not [System.Diagnostics.EventLog]::SourceExists($this.EventSource)) {
+            try {
+                [System.Diagnostics.EventLog]::CreateEventSource($this.EventSource, $this.EventLogName)
+            } catch {
+                $this.Write("WARNING: Unable to create event log source '$($this.EventSource)': $_")
+            }
+        }
+    }
+
+    [void] WriteInfoEvent([string]$Message) {
+        $this.EnsureEventSource()
+        try {
+            [System.Diagnostics.EventLog]::WriteEntry($this.EventSource, $Message, [System.Diagnostics.EventLogEntryType]::Information, $this.InfoEventId)
+        } catch {
+            $this.Write("WARNING: Unable to write Information event: $_")
+        }
+        $this.InfoEventId++
+    }
+
+    [void] WriteWarnEvent([string]$Message) {
+        $this.EnsureEventSource()
+        try {
+            [System.Diagnostics.EventLog]::WriteEntry($this.EventSource, $Message, [System.Diagnostics.EventLogEntryType]::Warning, $this.WarnEventId)
+        } catch {
+            $this.Write("WARNING: Unable to write Warning event: $_")
+        }
+        $this.WarnEventId++
+    }
+
+    [void] WriteErrorEvent([string]$Message) {
+        $this.EnsureEventSource()
+        try {
+            [System.Diagnostics.EventLog]::WriteEntry($this.EventSource, $Message, [System.Diagnostics.EventLogEntryType]::Error, $this.ErrorEventId)
+        } catch {
+            $this.Write("WARNING: Unable to write Error event: $_")
+        }
+        $this.ErrorEventId++
+    }
 }
 
 Write-Verbose "[LogWriter] -as [type] is $(try{[LogWriter] -as [type];$true}catch{$false})"
 
-$Logger = [LogWriter]::new($LogFile.FullName)
+$Logger = [LogWriter]::new($LogFile.FullName, $EventLogName, $EventLogSource)
 Write-Verbose $LogFile.FullName
 $Logger.Open()
 
@@ -136,6 +191,8 @@ foreach ($reason in $pendingReasons) {
 }
 
 if ($PSCmdlet.ShouldProcess($env:COMPUTERNAME, "Restart-Computer ($Message)")) {
+    $eventMessage = "ServerSafeReboot: Reboot initiated by this script. Pending reasons: $($pendingReasons -join ', ')"
+    $Logger.WriteInfoEvent($eventMessage)
     $Message = "Restart-Computer -Force -Timeout $DelaySeconds"
     $Logger.Write($Message)
     Write-Verbose $Message
