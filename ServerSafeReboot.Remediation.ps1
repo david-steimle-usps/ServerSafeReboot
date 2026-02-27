@@ -14,10 +14,101 @@
 param(
     [Parameter()]
     [string]$Message = 'ServerSafeReboot: Restarting to apply pending changes.',
-
     [Parameter()]
-    [uint32]$DelaySeconds = 0
+    [uint32]$DelaySeconds = 0,
+    [Parameter(HelpMessage = "The directory for the log file. The default uses environmental variables which have a high likelihood of existing. If you want to use another directory it is advised you add code to assure directory existence.")]
+    [string]$LogDirectory = $env:TEMP,
+    [Parameter(HelpMessage = "The file to log to. It will be placed in the directory defined above.")]
+    [string]$LogFileName = "WindowsUpdateCleanupRemediation.log"
 )
+
+#region Logger
+
+$LogFile = [System.IO.FileInfo]$(Join-Path -Path $LogDirectory -ChildPath $LogFileName)
+
+class LogWriter {
+    [System.IO.StreamWriter]$Writer
+    [string]$Path
+    [long]$MaxBytes = 10MB
+    [int]$MaxBackups = 2
+
+    LogWriter([string]$Path) {
+        $this.Path = $Path
+    }
+
+    [void] Rotate() {
+        $fileInfo = [System.IO.FileInfo]$this.Path
+        if (-not $fileInfo.Exists -or $fileInfo.Length -lt $this.MaxBytes) { return }
+
+        $dir      = $fileInfo.DirectoryName
+        $baseName = $fileInfo.BaseName
+        $ext      = $fileInfo.Extension
+        $date     = Get-Date -Format 'yyyy-MM-dd'
+
+        $newName = '{0}-{1}{2}' -f $baseName, $date, $ext
+        $newPath = Join-Path $dir $newName
+
+        $counter = 1
+        while ([System.IO.File]::Exists($newPath)) {
+            $newName = '{0}-{1}-{2}{3}' -f $baseName, $date, $counter, $ext
+            $newPath = Join-Path $dir $newName
+            $counter++
+        }
+
+        [System.IO.File]::Move($this.Path, $newPath)
+
+        Get-ChildItem -Path $dir -Filter ('{0}-*{1}' -f $baseName, $ext) |
+            Sort-Object -Property LastWriteTime -Descending |
+            Select-Object -Skip $this.MaxBackups |
+            ForEach-Object { [System.IO.File]::Delete($PSItem.FullName) }
+    }
+
+    [void] Open() {
+        $this.Rotate()
+        $this.Writer = [System.IO.StreamWriter]::new($this.Path, $true)
+    }
+
+    [void] Write([string]$Message) {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fffff"
+        $this.Writer.WriteLine("$timestamp $Message")
+        $this.Writer.Flush()
+    }
+
+    [void] Caption([string]$Message) {
+        $this.Writer.WriteLine($Message)
+        $this.Writer.Flush()
+    }
+
+    [void] Close() {
+        $this.Writer.Close()
+        $this.Writer.Dispose()
+    }
+}
+
+Write-Verbose "[LogWriter] -as [type] is $(try{[LogWriter] -as [type];$true}catch{$false})"
+
+$Logger = [LogWriter]::new($LogFile.FullName)
+Write-Verbose $LogFile.FullName
+$Logger.Open()
+
+$Bar = '#'*80
+
+$Masthead = New-Object -TypeName psobject
+$Masthead | Add-Member -MemberType NoteProperty -Name 'Endpoint' -Value $([System.Net.Dns]::GetHostEntry('').HostName)
+$Masthead | Add-Member -MemberType NoteProperty -Name 'Effort' -Value $LogFile.BaseName
+$Masthead | Add-Member -MemberType NoteProperty -Name 'ThisLog' -Value $LogFile.FullName
+$Masthead | Add-Member -MemberType ScriptProperty -Name 'RemoteLog' -Value { "\\$($this.Endpoint)\$($this.ThisLog -replace ':','$')" }
+$Masthead | Add-Member -MemberType NoteProperty -Name 'ScriptSource' -Value $PSScriptRoot
+$Masthead | Add-Member -MemberType NoteProperty -Name 'DateTime' -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $([System.TimeZoneInfo]::Local.Id)"
+
+$MastheadText = ($Masthead | Format-List | Out-String).Trim()
+
+$Logger.Caption($Bar)
+$Logger.Caption($MastheadText)
+$Logger.Caption($Bar)
+$Logger.Caption('')
+
+#endregion Logger
 
 $pendingReasons = New-Object System.Collections.Generic.List[string]
 
@@ -39,9 +130,14 @@ if ($null -ne $pendingRenames -and @($pendingRenames).Count -gt 0) {
 }
 
 foreach ($reason in $pendingReasons) {
-    Write-Verbose "Reboot triggered for reason: $reason"
+    $Message = "Reboot triggered for reason: $reason"
+    Write-Verbose $Message
+    $Logger.Write($Message)
 }
 
 if ($PSCmdlet.ShouldProcess($env:COMPUTERNAME, "Restart-Computer ($Message)")) {
+    $Message = "Restart-Computer -Force -Timeout $DelaySeconds"
+    $Logger.Write($Message)
+    Write-Verbose $Message
     Restart-Computer -Force -Timeout $DelaySeconds
 }
