@@ -198,12 +198,22 @@ foreach ($reason in $pendingReasons) {
     $Logger.Write($Message)
 }
 
-if ($PSCmdlet.ShouldProcess($env:COMPUTERNAME, "Restart-Computer ($Message)")) {
+# Select shutdown reason code based on highest-priority pending reason
+# Priority: SecurityUpdate > CBSRepair > UptimeThreshold
+if ($pendingReasons -contains 'SecurityUpdate') {
+    $shutdownReasonCode = 'P:2:17'   # Planned – OS: Security Fix
+} elseif ($pendingReasons -contains 'CBSRepair') {
+    $shutdownReasonCode = 'P:2:17'   # Planned – OS: Security Fix
+} else {
+    $shutdownReasonCode = 'P:4:2'    # Planned – Application: Maintenance
+}
+
+if ($PSCmdlet.ShouldProcess($env:COMPUTERNAME, "shutdown.exe /r /t $DelaySeconds /d $shutdownReasonCode /c `"$Message`"")) {
     $eventMessage = "ServerSafeReboot: Reboot initiated by this script. Pending reasons: $($pendingReasons -join ', ')"
     $Logger.WriteInfoEvent($eventMessage)
-    $Message = "Restart-Computer -Force -Timeout $DelaySeconds"
-    $Logger.Write($Message)
-    Write-Verbose $Message
-    Restart-Computer -Force -Timeout $DelaySeconds
+    $shutdownCmd = "shutdown.exe /r /t $DelaySeconds /d $shutdownReasonCode /c `"$Message`""
+    $Logger.Write($shutdownCmd)
+    Write-Verbose $shutdownCmd
+    shutdown.exe /r /t $DelaySeconds /d $shutdownReasonCode /c "$Message"
 }
  
