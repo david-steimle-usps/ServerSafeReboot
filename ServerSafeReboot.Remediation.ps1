@@ -235,10 +235,20 @@ if (Test-Path -Path $uptimeMarkerPath) {
 }
 
 foreach ($reason in $pendingReasons) {
-    $Message = "Reboot triggered for reason: $reason"
-    Write-Verbose $Message
-    $Logger.Write($Message)
+    $logEntry = "Reboot triggered for reason: $reason"
+    Write-Verbose $logEntry
+    $Logger.Write($logEntry)
 }
+
+# Guard: if no reasons remain, the system may have been rebooted between detection and remediation
+if ($pendingReasons.Count -eq 0) {
+    $lastBootTime = (Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime
+    $Logger.Write("No pending reboot reasons found. Last boot time: $($lastBootTime.ToString('yyyy-MM-dd HH:mm:ss')). System may have been rebooted between detection and remediation.")
+    $Logger.WriteWarnEvent("ServerSafeReboot remediation found no pending reasons. Last boot: $lastBootTime. Skipping reboot.")
+    $Logger.Close()
+    exit 0
+}
+
 $Message = 'ServerSafeReboot: Restarting to apply pending changes.'
 
 # Select shutdown reason code based on highest-priority pending reason
