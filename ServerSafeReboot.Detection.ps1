@@ -6,7 +6,7 @@
     Checks three conditions that indicate a pending reboot is required:
       - Security Update completion (WindowsUpdate RebootRequired registry key)
       - CBS repair finalization (Component Based Servicing RebootPending registry key)
-      - File Rename operations (PendingFileRenameOperations registry value)
+      - Uptime threshold exceeded (last boot date is >= UptimeThresholdDays ago)
 
     Compliant  (no reboot needed) : outputs $true  and exits with code 0.
     Non-compliant (reboot needed) : outputs $false and exits with code 1.
@@ -16,7 +16,9 @@
     No logging is performed.
 #>
 [CmdletBinding()]
-param()
+param(
+    [int]$UptimeThresholdDays = 7
+)
 
 $rebootReasons = New-Object System.Collections.Generic.List[string]
 
@@ -34,12 +36,29 @@ if (Test-Path -Path $cbsPath) {
     $rebootReasons.Add('CBSRepair')
 }
 
-# Check: File Rename Operations reboot required
-$sessionManagerPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
-$pendingRenames = (Get-ItemProperty -Path $sessionManagerPath -Name 'PendingFileRenameOperations' -ErrorAction SilentlyContinue).PendingFileRenameOperations
-if ($null -ne $pendingRenames -and @($pendingRenames).Count -gt 0) {
-    Write-Verbose 'Reboot required: File Rename operations pending.'
-    $rebootReasons.Add('FileRenameOperations')
+# Check: Uptime threshold exceeded (calendar-day comparison)
+$lastBootTime = (Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime
+$lastBootDate = $lastBootTime.Date          # midnight on the boot day
+$todayDate    = (Get-Date).Date              # midnight today
+$uptimeDays   = ($todayDate - $lastBootDate).Days
+
+$uptimeMarkerPath = 'HKLM:\SOFTWARE\ServerSafeReboot'
+if ($uptimeDays -ge $UptimeThresholdDays) {
+    Write-Verbose "Reboot required: Uptime is $uptimeDays day(s), threshold is $UptimeThresholdDays day(s)."
+    $rebootReasons.Add('UptimeThreshold')
+
+    # Create a registry marker so the remediation script can read the threshold details
+    if (-not (Test-Path -Path $uptimeMarkerPath)) {
+        New-Item -Path $uptimeMarkerPath -Force | Out-Null
+    }
+    New-ItemProperty -Path $uptimeMarkerPath -Name 'UptimeThresholdDays' -Value $UptimeThresholdDays -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $uptimeMarkerPath -Name 'UptimeDays'          -Value $uptimeDays          -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $uptimeMarkerPath -Name 'LastBootDate'        -Value $lastBootDate.ToString('yyyy-MM-dd') -PropertyType String -Force | Out-Null
+} else {
+    # Clear stale marker if uptime is now below the threshold (e.g. after a recent reboot)
+    if (Test-Path -Path $uptimeMarkerPath) {
+        Remove-Item -Path $uptimeMarkerPath -Recurse -Force | Out-Null
+    }
 }
 
 if ($rebootReasons.Count -gt 0) {
@@ -54,3 +73,4 @@ if ($rebootReasons.Count -gt 0) {
 # Compliant: no reboot needed
 $true
 exit 0
+ 

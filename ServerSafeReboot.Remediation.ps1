@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Initiates a graceful restart of the local computer to complete any
-    pending operations (Security Updates, CBS repairs, File Rename operations).
+    pending operations (Security Updates, CBS repairs, or uptime threshold breach).
 
 .NOTES
     Run ServerSafeReboot.Detection.ps1 first to confirm a reboot is required
@@ -178,10 +178,18 @@ if (Test-Path -Path $cbsPath) {
     $pendingReasons.Add('CBSRepair')
 }
 
-$sessionManagerPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
-$pendingRenames = (Get-ItemProperty -Path $sessionManagerPath -Name 'PendingFileRenameOperations' -ErrorAction SilentlyContinue).PendingFileRenameOperations
-if ($null -ne $pendingRenames -and @($pendingRenames).Count -gt 0) {
-    $pendingReasons.Add('FileRenameOperations')
+# Check: Uptime threshold marker left by Detection script
+$uptimeMarkerPath = 'HKLM:\SOFTWARE\ServerSafeReboot'
+if (Test-Path -Path $uptimeMarkerPath) {
+    $markerProps     = Get-ItemProperty -Path $uptimeMarkerPath -ErrorAction SilentlyContinue
+    $thresholdDays   = $markerProps.UptimeThresholdDays
+    $actualDays      = $markerProps.UptimeDays
+    $lastBoot        = $markerProps.LastBootDate
+    $pendingReasons.Add('UptimeThreshold')
+    $Logger.Write("Uptime threshold breached: $actualDays day(s) >= $thresholdDays day(s) threshold (last boot: $lastBoot).")
+
+    # Clear the marker now that we have consumed it
+    Remove-Item -Path $uptimeMarkerPath -Recurse -Force | Out-Null
 }
 
 foreach ($reason in $pendingReasons) {
@@ -198,3 +206,4 @@ if ($PSCmdlet.ShouldProcess($env:COMPUTERNAME, "Restart-Computer ($Message)")) {
     Write-Verbose $Message
     Restart-Computer -Force -Timeout $DelaySeconds
 }
+ 
