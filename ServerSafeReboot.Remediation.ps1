@@ -9,17 +9,18 @@
 .NOTES
     Run ServerSafeReboot.Detection.ps1 first to confirm a reboot is required
     before invoking this remediation script.
+
+.LINK
+    https://github.com/david-steimle-usps/ServerSafeReboot
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter()]
-    [string]$Message = 'ServerSafeReboot: Restarting to apply pending changes.',
-    [Parameter()]
-    [uint32]$DelaySeconds = 0,
+    [uint32]$DelaySeconds = 90,
     [Parameter(HelpMessage = "The directory for the log file. The default uses environmental variables which have a high likelihood of existing. If you want to use another directory it is advised you add code to assure directory existence.")]
     [string]$LogDirectory = $env:TEMP,
     [Parameter(HelpMessage = "The file to log to. It will be placed in the directory defined above.")]
-    [string]$LogFileName = "WindowsUpdateCleanupRemediation.log",
+    [string]$LogFileName = "$(([System.IO.FileInfo]$MyInvocation.MyCommand.Path).BaseName).log",
     [Parameter(HelpMessage = "The name of the Windows Event Log to write to.")]
     [string]$EventLogName = 'Application',
     [Parameter(HelpMessage = "The event log source name to use when writing events.")]
@@ -40,6 +41,7 @@ class LogWriter {
     [int]$InfoEventId = 1000
     [int]$WarnEventId = 2000
     [int]$ErrorEventId = 3000
+    [bool]$IsOpen = $false
 
     LogWriter([string]$Path) {
         $this.Path = $Path
@@ -81,6 +83,7 @@ class LogWriter {
     [void] Open() {
         $this.Rotate()
         $this.Writer = [System.IO.StreamWriter]::new($this.Path, $true)
+        $this.IsOpen = $true
     }
 
     [void] Write([string]$Message) {
@@ -95,8 +98,11 @@ class LogWriter {
     }
 
     [void] Close() {
-        $this.Writer.Close()
-        $this.Writer.Dispose()
+        if ($this.IsOpen) {
+            $this.Writer.Close()
+            $this.Writer.Dispose()
+            $this.IsOpen = $false
+        }
     }
 
     [void] EnsureEventSource() {
@@ -155,6 +161,7 @@ $Masthead | Add-Member -MemberType NoteProperty -Name 'ThisLog' -Value $LogFile.
 $Masthead | Add-Member -MemberType ScriptProperty -Name 'RemoteLog' -Value { "\\$($this.Endpoint)\$($this.ThisLog -replace ':','$')" }
 $Masthead | Add-Member -MemberType NoteProperty -Name 'ScriptSource' -Value $PSScriptRoot
 $Masthead | Add-Member -MemberType NoteProperty -Name 'DateTime' -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $([System.TimeZoneInfo]::Local.Id)"
+$Masthead | Add-Member -MemberType NoteProperty -Name 'MoreInfo' -Value "$(((Get-Help $MyInvocation.MyCommand.Path).relatedLinks.navigationLink).uri)"
 
 $MastheadText = ($Masthead | Format-List | Out-String).Trim()
 
@@ -197,6 +204,7 @@ foreach ($reason in $pendingReasons) {
     Write-Verbose $Message
     $Logger.Write($Message)
 }
+$Message = 'ServerSafeReboot: Restarting to apply pending changes.'
 
 # Select shutdown reason code based on highest-priority pending reason
 # Priority: SecurityUpdate > CBSRepair > UptimeThreshold
@@ -209,11 +217,39 @@ if ($pendingReasons -contains 'SecurityUpdate') {
 }
 
 if ($PSCmdlet.ShouldProcess($env:COMPUTERNAME, "shutdown.exe /r /t $DelaySeconds /d $shutdownReasonCode /c `"$Message`"")) {
-    $eventMessage = "ServerSafeReboot: Reboot initiated by this script. Pending reasons: $($pendingReasons -join ', ')"
+    $eventMessage = "ServerSafeReboot: Reboot initiated by this scripted compliance. Pending reasons: $($pendingReasons -join ', ')"
     $Logger.WriteInfoEvent($eventMessage)
     $shutdownCmd = "shutdown.exe /r /t $DelaySeconds /d $shutdownReasonCode /c `"$Message`""
     $Logger.Write($shutdownCmd)
     Write-Verbose $shutdownCmd
-    shutdown.exe /r /t $DelaySeconds /d $shutdownReasonCode /c "$Message"
+    shutdown.exe /r /t $DelaySeconds /d $shutdownReasonCode /c "$Message" 2>&1
+    $shutdownExitCode = $LASTEXITCODE
+
+    switch ($shutdownExitCode) {
+        0 {
+            $Logger.Write('shutdown.exe completed successfully (exit code 0). Reboot scheduled.')
+        }
+        1190 {
+            $Logger.Write('shutdown.exe: A shutdown is already in progress (exit code 1190). No action needed.')
+            $Logger.WriteWarnEvent("shutdown.exe returned 1190: a shutdown was already in progress.")
+        }
+        5 {
+            $Logger.Write('shutdown.exe: Access denied (exit code 5). Reboot was NOT scheduled.')
+            $Logger.WriteErrorEvent("shutdown.exe returned 5: access denied. Verify the script runs as SYSTEM or an account with SeShutdownPrivilege.")
+        }
+        default {
+            $Logger.Write("shutdown.exe: Unknown exit code $shutdownExitCode. Reboot may not have been scheduled.")
+            $Logger.WriteErrorEvent("shutdown.exe returned unexpected exit code $shutdownExitCode.")
+        }
+    }
+
+    $Logger.Close()
+
+    if ($shutdownExitCode -eq 0 -or $shutdownExitCode -eq 1190) {
+        exit 0
+    } else {
+        exit 1
+    }
 }
- 
+
+if ($Logger.IsOpen) { $Logger.Close() }

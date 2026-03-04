@@ -14,6 +14,9 @@
 .NOTES
     Screen output is limited to Write-Verbose.
     No logging is performed.
+
+.LINK
+    https://github.com/david-steimle-usps/ServerSafeReboot
 #>
 [CmdletBinding()]
 param(
@@ -73,4 +76,3 @@ if ($rebootReasons.Count -gt 0) {
 # Compliant: no reboot needed
 $true
 exit 0
- 
