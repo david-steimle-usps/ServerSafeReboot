@@ -3,27 +3,62 @@
     Remediates a pending server reboot by restarting the computer.
 
 .DESCRIPTION
-    Initiates a graceful restart of the local computer to complete any
-    pending operations (Security Updates, CBS repairs, or uptime threshold breach).
+    Checks for pending reboot conditions (Security Updates, CBS repairs,
+    and an uptime threshold marker written by ServerSafeReboot.Detection.ps1),
+    logs the reasons, writes an Application event log entry, and initiates
+    a restart via shutdown.exe with a configurable delay. The delay allows
+    an active user to see the notification and optionally abort with
+    shutdown /a.
+
+    Exit code 0 is returned when the shutdown is scheduled successfully
+    or a shutdown is already in progress. Exit code 1 is returned on
+    failure (access denied, unexpected error).
+
+.PARAMETER DelaySeconds
+    Seconds to wait before the restart begins. During this window the
+    pending shutdown is visible to logged-in users and can be cancelled
+    with shutdown /a. Default is 90.
+
+.PARAMETER LogDirectory
+    Directory for the log file. Defaults to the TEMP environment variable.
+    If a custom path is specified, ensure the directory exists.
+
+.PARAMETER LogFileName
+    Name of the log file. Defaults to the script's own base name with a
+    .log extension (e.g. ServerSafeReboot.Remediation.log).
+
+.PARAMETER EventLogName
+    Windows Event Log to write entries to. Default is Application.
+
+.PARAMETER EventLogSource
+    Source name used when writing event log entries. Default is
+    ServerSafeReboot. The source is created automatically if it does
+    not already exist.
 
 .NOTES
-    Run ServerSafeReboot.Detection.ps1 first to confirm a reboot is required
-    before invoking this remediation script.
+    This script should run elevated (as SYSTEM or an Administrator)
+    to ensure access to the CBS registry key and shutdown privileges.
+
+    Logs are written to a rotating text file and to the Windows
+    Application event log under the ServerSafeReboot source.
+
+    The uptime threshold marker at HKLM:\SOFTWARE\ServerSafeReboot is
+    consumed and cleared by this script after reading.
 
 .LINK
     https://github.com/david-steimle-usps/ServerSafeReboot
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter()]
+    [Parameter(HelpMessage = 'Seconds to delay before restart. Users can run shutdown /a to cancel during this window.')]
     [uint32]$DelaySeconds = 90,
-    [Parameter(HelpMessage = "The directory for the log file. The default uses environmental variables which have a high likelihood of existing. If you want to use another directory it is advised you add code to assure directory existence.")]
+    [Parameter(HelpMessage = 'Directory for the log file. Defaults to TEMP. Ensure the directory exists if overriding.')]
     [string]$LogDirectory = $env:TEMP,
-    [Parameter(HelpMessage = "The file to log to. It will be placed in the directory defined above.")]
+    [Parameter(HelpMessage = 'Log file name. Defaults to the script base name with a .log extension.')]
     [string]$LogFileName = "$(([System.IO.FileInfo]$MyInvocation.MyCommand.Path).BaseName).log",
-    [Parameter(HelpMessage = "The name of the Windows Event Log to write to.")]
+    [Parameter(HelpMessage = 'Windows Event Log name to write entries to.')]
     [string]$EventLogName = 'Application',
-    [Parameter(HelpMessage = "The event log source name to use when writing events.")]
+    [Parameter(HelpMessage = 'Event log source name. Created automatically if it does not exist.')]
     [string]$EventLogSource = 'ServerSafeReboot'
 )
 
