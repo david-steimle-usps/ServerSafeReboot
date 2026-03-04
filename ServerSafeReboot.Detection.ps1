@@ -11,9 +11,18 @@
     Compliant  (no reboot needed) : outputs $true  and exits with code 0.
     Non-compliant (reboot needed) : outputs $false and exits with code 1.
 
+.PARAMETER UptimeThresholdDays
+    The number of calendar days of uptime after which a reboot is required.
+    Comparison is date-based (midnight to midnight) so a partial day from
+    a mid-day reboot does not skew the threshold. Default is 7.
+
 .NOTES
     Screen output is limited to Write-Verbose.
-    No logging is performed.
+    No file logging is performed.
+    When the uptime threshold is breached, a registry marker is written to
+    HKLM:\SOFTWARE\ServerSafeReboot so the remediation script can read
+    the threshold details. The marker is cleared when uptime is below
+    the threshold.
 
 .LINK
     https://github.com/david-steimle-usps/ServerSafeReboot
